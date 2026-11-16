@@ -3,7 +3,7 @@
 import { FormEvent, Fragment, useEffect, useMemo, useState } from "react";
 import WarehouseScene, { HoverInfo } from "./WarehouseScene";
 import TruckView from "./TruckView";
-import { TRUCK_PRESETS, Truck, defaultTrucks, maxUnitsThatFit, packTruck } from "@/lib/trucks";
+import { TRUCK_PRESETS, Truck, TruckLoad, defaultTrucks, maxUnitsThatFit, packTruck } from "@/lib/trucks";
 import {
   Customer,
   DEFAULT_CONFIG,
@@ -155,6 +155,7 @@ export default function Simulator() {
   const [truckId, setTruckId] = useState(initial.trucks[0]?.id ?? "");
   const [truckDraft, setTruckDraft] = useState(EMPTY_TRUCK_DRAFT);
   const [truckHover, setTruckHover] = useState<string | null>(null);
+  const [returnTo, setReturnTo] = useState(""); // "" = the warehouse each load came from
   // Dispatch panel under a customer row: which customer, how many pallets, onto which truck.
   const [ship, setShip] = useState<{ customerId: string; count: string; truckId: string } | null>(null);
   const active = warehouses.find((w) => w.id === activeId) ?? warehouses[0];
@@ -362,7 +363,15 @@ export default function Simulator() {
         text: `${truck.name} only has room for ${room} more pallet${room === 1 ? "" : "s"} of ${product.name}.`,
       });
     const boxes = n * pattern.perPallet;
-    const load = { id: crypto.randomUUID(), customer: c.name, warehouse: active.name, productId: product.id, boxes, color: c.color };
+    const load: TruckLoad = {
+      id: crypto.randomUUID(),
+      customer: c.name,
+      warehouse: active.name,
+      warehouseId: active.id,
+      productId: product.id,
+      boxes,
+      color: c.color,
+    };
     setTrucks((ts) => ts.map((t) => (t.id === truck.id ? { ...t, loads: [...t.loads, load] } : t)));
     patch(active.id, (w) => {
       const all = n >= c.pallets;
@@ -400,6 +409,60 @@ export default function Simulator() {
 
   function emptyTruck(id: string) {
     setTrucks((ts) => ts.map((t) => (t.id === id ? { ...t, loads: [] } : t)));
+  }
+
+  /**
+   * Take loads off a truck and put them back in the racks: cartons are
+   * re-palletised (full pallets, rounded up) and allocated in the chosen
+   * warehouse, or the one each load came from. A load joins the customer it
+   * came from when that customer still holds the same product there.
+   */
+  function returnLoads(truckId: string, loadIds: string[]) {
+    const truck = trucks.find((t) => t.id === truckId);
+    if (!truck) return;
+    const byId = new Map(warehouses.map((w) => [w.id, w]));
+    const done: string[] = [];
+    const failed: string[] = [];
+    let pallets = 0;
+    for (const l of truck.loads.filter((x) => loadIds.includes(x.id))) {
+      const w =
+        byId.get(returnTo) ??
+        (l.warehouseId ? byId.get(l.warehouseId) : undefined) ??
+        [...byId.values()].find((x) => x.name === l.warehouse) ??
+        byId.get(active.id)!;
+      const product = productById.get(l.productId);
+      const pattern = product && palletPattern(product, w.config);
+      if (!pattern) {
+        failed.push(`${l.customer} (product doesn't fit a pallet in ${w.name})`);
+        continue;
+      }
+      const n = Math.ceil(l.boxes / pattern.perPallet);
+      const existing = w.customers.find((c) => c.name === l.customer && c.productId === l.productId && c.placed);
+      const id = existing?.id ?? crypto.randomUUID();
+      const stacks = allocate(computeLayout(w.config), w.stacks, id, n);
+      if (!stacks) {
+        failed.push(`${l.customer} (no room for ${n} pallets in ${w.name})`);
+        continue;
+      }
+      const customers = existing
+        ? w.customers.map((c) => (c.id === id ? { ...c, pallets: c.pallets + n, boxes: c.boxes + n * pattern.perPallet } : c))
+        : [
+            ...w.customers,
+            { id, name: l.customer, productId: l.productId, pallets: n, boxes: n * pattern.perPallet, color: l.color, placed: true },
+          ];
+      byId.set(w.id, { ...w, stacks, customers, transition: "animate" });
+      done.push(l.id);
+      pallets += n;
+    }
+    if (done.length) {
+      setWarehouses(warehouses.map((w) => byId.get(w.id)!));
+      setTrucks((ts) => ts.map((t) => (t.id === truckId ? { ...t, loads: t.loads.filter((l) => !done.includes(l.id)) } : t)));
+    }
+    setMessage(
+      failed.length
+        ? { kind: "err", text: `${done.length ? `Returned ${pallets} pallet${pallets === 1 ? "" : "s"}. ` : ""}Could not return: ${failed.join("; ")}.` }
+        : { kind: "ok", text: `Returned ${pallets} pallet${pallets === 1 ? "" : "s"} from ${truck.name} to the warehouse.` },
+    );
   }
 
   function removeLoad(truck: string, loadId: string) {
@@ -775,6 +838,7 @@ export default function Simulator() {
 
         {tab === "trucks" && (
           <>
+            {messageEl}
             <section className="flex flex-col">
               <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Trucks ({trucks.length})</h2>
               {trucks.length === 0 && <p className="text-xs text-slate-500">No trucks yet.</p>}
@@ -878,6 +942,17 @@ export default function Simulator() {
                     <p className="text-xs text-slate-500">Empty. Ship a customer from the Allocate tab to load it.</p>
                   ) : (
                     <>
+                      <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                        Return to
+                        <select value={returnTo} onChange={(e) => setReturnTo(e.target.value)} className={`${inputCls} min-w-0 flex-1 py-1 text-xs`}>
+                          <option value="">Warehouse it came from</option>
+                          {warehouses.map((w) => (
+                            <option key={w.id} value={w.id}>
+                              {w.name} ({summaries.get(w.id)!.free.toLocaleString()} pallet spaces free)
+                            </option>
+                          ))}
+                        </select>
+                      </label>
                       <ul className="flex flex-col gap-1">
                         {activeTruck.loads.map((l) => (
                           <li
@@ -893,23 +968,39 @@ export default function Simulator() {
                               </span>
                             </span>
                             <button
+                              onClick={() => returnLoads(activeTruck.id, [l.id])}
+                              className="rounded border border-slate-700 px-1.5 py-0.5 text-[11px] text-slate-400 hover:border-emerald-500 hover:text-emerald-300"
+                              title="Re-palletise these cartons and put them back in the racks"
+                            >
+                              Return
+                            </button>
+                            <button
                               onClick={() => removeLoad(activeTruck.id, l.id)}
                               className="text-slate-500 hover:text-rose-400"
-                              aria-label={`Unload ${l.customer}`}
-                              title="Take this load off the truck"
+                              aria-label={`Discard ${l.customer}'s load`}
+                              title="Remove this load from the truck without returning it"
                             >
                               ✕
                             </button>
                           </li>
                         ))}
                       </ul>
-                      <button
-                        onClick={() => emptyTruck(activeTruck.id)}
-                        className="rounded border border-slate-700 py-1 text-xs text-slate-300 hover:border-emerald-500 hover:text-white"
-                        title="The truck leaves; its cargo is cleared"
-                      >
-                        Dispatch truck (empty it)
-                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => returnLoads(activeTruck.id, activeTruck.loads.map((l) => l.id))}
+                          className="flex-1 rounded border border-slate-700 py-1 text-xs text-slate-300 hover:border-emerald-500 hover:text-white"
+                          title="Put every load on this truck back in the racks"
+                        >
+                          Return all to warehouse
+                        </button>
+                        <button
+                          onClick={() => emptyTruck(activeTruck.id)}
+                          className="flex-1 rounded border border-slate-700 py-1 text-xs text-slate-300 hover:border-sky-500 hover:text-white"
+                          title="The truck leaves; its cargo is cleared"
+                        >
+                          Dispatch truck
+                        </button>
+                      </div>
                     </>
                   )}
                 </section>
@@ -964,7 +1055,6 @@ export default function Simulator() {
                   Add truck
                 </button>
               </form>
-              {messageEl && <div className="mt-2">{messageEl}</div>}
               <p className="mt-2 text-[11px] text-slate-500">
                 Cartons are loaded loose, this side up, in walls across the full width and height from the cab
                 backwards. Each product uses the carton orientation that needs the least floor length.
@@ -1190,7 +1280,7 @@ export default function Simulator() {
           </div>
         )}
         {tab === "trucks" && (
-          <div className="absolute inset-0 z-10">
+          <div className="absolute inset-0 z-10 bg-[#c9dceb]">
             {activeTruck ? (
               <TruckView
                 truck={activeTruck}

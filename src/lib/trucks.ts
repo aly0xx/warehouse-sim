@@ -27,7 +27,8 @@ export interface Truck {
 export interface TruckLoad {
   id: string;
   customer: string;
-  warehouse: string;
+  warehouse: string; // name at the time of shipping (for display)
+  warehouseId?: string; // where it came from (missing on older saves)
   productId: string;
   boxes: number;
   color: string;
