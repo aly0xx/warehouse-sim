@@ -72,7 +72,7 @@ export default function WarehouseScene(props: Props) {
   return (
     <div className="absolute inset-0">
     <Canvas
-      shadows
+      shadows="percentage"
       dpr={[1, 2]}
       gl={{ antialias: true }}
       camera={{ fov: 45, near: 0.1, far: 6000 }}

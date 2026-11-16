@@ -1,7 +1,7 @@
 "use client";
 
 import { Canvas, ThreeEvent } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls, Sky } from "@react-three/drei";
 import { useLayoutEffect, useRef } from "react";
 import * as THREE from "three";
 import { Placement, Truck, TruckPlan } from "@/lib/trucks";
@@ -22,16 +22,19 @@ export default function TruckView({ truck, plan, placements, colorOf, onHover }:
   return (
     <Canvas
       key={truck.id}
-      shadows
+      shadows="percentage"
       dpr={[1, 2]}
-      camera={{ fov: 40, near: 0.05, far: 500, position: [span * 0.2, span * 0.55, span * 1.0] }}
+      camera={{ fov: 40, near: 0.05, far: 500, position: [span * 0.15, span * 0.7, span * 1.5] }}
     >
-      <color attach="background" args={["#0f172a"]} />
-      <fog attach="fog" args={["#0f172a", span * 2, span * 5]} />
-      <hemisphereLight args={["#e2e8f0", "#334155", 1.1]} />
+      {/* Same daytime sky as the warehouse view */}
+      <color attach="background" args={["#c9dceb"]} />
+      <Sky distance={4500} sunPosition={SUN} turbidity={5} rayleigh={1.2} mieCoefficient={0.004} mieDirectionalG={0.8} />
+      <fog attach="fog" args={["#c9dceb", 60, 400]} />
+      <hemisphereLight args={["#dbeafe", "#4a6b33", 1.1]} />
       <directionalLight
-        position={[span * 0.3, span * 1.2, span * 0.6]}
-        intensity={2}
+        position={[SUN[0] * span * 2, SUN[1] * span * 2, SUN[2] * span * 2]}
+        intensity={2.4}
+        color="#fff4e0"
         castShadow
         shadow-mapSize={[2048, 2048]}
         shadow-bias={-0.0005}
@@ -56,6 +59,7 @@ export default function TruckView({ truck, plan, placements, colorOf, onHover }:
   );
 }
 
+const SUN: V3 = [-0.45, 0.8, 0.4]; // toward the sun, lighting the near side
 const CAB_L = 2.3; // cab length, m
 const WALL = 0.05; // cargo box wall thickness
 const noRaycast = () => null;
@@ -124,6 +128,87 @@ function Wheel({ x, z, r, y }: { x: number; z: number; r: number; y: number }) {
   );
 }
 
+const DOCK_GAP = 0.35; // truck rear to dock wall
+
+/**
+ * The loading bay the truck is backed up to: warehouse wall with the dock door
+ * behind its rear doors, closed neighbouring doors, painted truck court,
+ * concrete apron and grass beyond. Truck frame: dock wall at x ≈ L, ground at y = g.
+ */
+function Yard({ L, W, H, g }: { L: number; W: number; H: number; g: number }) {
+  const wx = L + WALL + DOCK_GAP; // dock wall outer face
+  const wallH = g + 11; // top of the wall
+  const wallZ0 = W / 2 - 30, wallZ1 = W / 2 + 30;
+  const doorH = Math.max(H, 2.8) + 0.2;
+  const pitch = Math.max(W + 2.2, 4.5); // spacing between dock doors
+  const doors = [-2, -1, 1, 2].map((k) => W / 2 + k * pitch);
+  const court = { x0: wx - 60, x1: wx, z0: wallZ0, z1: wallZ1 };
+  return (
+    <group>
+      {/* Grass */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[wx, g - 0.03, W / 2]} receiveShadow raycast={noRaycast}>
+        <circleGeometry args={[500, 48]} />
+        <meshStandardMaterial color="#56783a" roughness={1} />
+      </mesh>
+      {/* Asphalt truck court */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[(court.x0 + court.x1) / 2, g - 0.01, (court.z0 + court.z1) / 2]}
+        receiveShadow
+        raycast={noRaycast}
+      >
+        <planeGeometry args={[court.x1 - court.x0, court.z1 - court.z0]} />
+        <meshStandardMaterial color="#3f4448" roughness={1} />
+      </mesh>
+      {/* Concrete apron in front of the docks */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[wx - 9, g, W / 2]} receiveShadow raycast={noRaycast}>
+        <planeGeometry args={[18, wallZ1 - wallZ0]} />
+        <meshStandardMaterial color="#6b7075" roughness={1} />
+      </mesh>
+      {/* Yellow stall lines between the bays */}
+      {[...doors, W / 2].flatMap((zc) => [zc - pitch / 2, zc + pitch / 2]).map((z, i) => (
+        <mesh key={i} rotation={[-Math.PI / 2, 0, 0]} position={[wx - 9, g + 0.005, z]} raycast={noRaycast}>
+          <planeGeometry args={[17.5, 0.15]} />
+          <meshBasicMaterial color="#facc15" />
+        </mesh>
+      ))}
+
+      {/* Warehouse wall, with the building's floor at dock height behind it */}
+      <Part p={[wx + 0.15, (g + wallH) / 2, W / 2]} s={[0.3, wallH - g, wallZ1 - wallZ0]} color="#d6d3d1" rough={0.8} metal={0.1} />
+      <Part p={[wx + 0.16, wallH - 0.4, W / 2]} s={[0.32, 0.5, wallZ1 - wallZ0]} color="#2563eb" metal={0.3} />
+      {/* Open dock door: dark interior, shelter pads and bumpers */}
+      <Part p={[wx - 0.005, doorH / 2 - 0.1, W / 2]} s={[0.02, doorH, W + 0.2]} color="#1c1917" rough={1} metal={0} />
+      {[-1, 1].map((sd) => (
+        <Part
+          key={sd}
+          p={[wx - 0.15, doorH / 2, W / 2 + sd * (W / 2 + 0.25)]}
+          s={[0.3, doorH + 0.3, 0.3]}
+          color="#111827"
+          rough={1}
+          metal={0}
+        />
+      ))}
+      <Part p={[wx - 0.15, doorH + 0.15, W / 2]} s={[0.3, 0.4, W + 0.8]} color="#111827" rough={1} metal={0} />
+      {[0.3, W - 0.3].map((z) => (
+        <Part key={z} p={[wx - 0.08, -0.25, z]} s={[0.16, 0.35, 0.3]} color="#111827" rough={1} metal={0} />
+      ))}
+      {/* Dock leveller bridging the gap to the truck floor */}
+      <Part p={[wx - DOCK_GAP / 2 - 0.02, -0.03, W / 2]} s={[DOCK_GAP + 0.1, 0.05, W - 0.2]} color="#9ca3af" metal={0.7} />
+      {/* Neighbouring bays: closed roller shutters with their own pads */}
+      {doors.map((z) => (
+        <group key={z}>
+          <Part p={[wx - 0.02, doorH / 2 - 0.1, z]} s={[0.04, doorH, W + 0.2]} color="#94a3b8" metal={0.5} rough={0.4} />
+          {[-1, 1].map((sd) => (
+            <Part key={sd} p={[wx - 0.15, doorH / 2, z + sd * (W / 2 + 0.25)]} s={[0.3, doorH + 0.3, 0.3]} color="#111827" rough={1} metal={0} />
+          ))}
+        </group>
+      ))}
+      {/* Building plinth below dock level */}
+      <Part p={[wx - 0.2, (g - 0.1) / 2, W / 2]} s={[0.4, -g - 0.1, wallZ1 - wallZ0]} color="#a8a29e" rough={0.9} metal={0} />
+    </group>
+  );
+}
+
 function TruckModel({ L, W, H }: { L: number; W: number; H: number }) {
   const d = truckDims(L);
   const g = -d.floorH; // ground level
@@ -153,11 +238,7 @@ function TruckModel({ L, W, H }: { L: number; W: number; H: number }) {
 
   return (
     <group>
-      {/* Ground */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[L / 2 - 1.5, g, W / 2]} receiveShadow raycast={noRaycast}>
-        <planeGeometry args={[L * 4 + 40, L * 4 + 40]} />
-        <meshStandardMaterial color="#1e293b" roughness={1} />
-      </mesh>
+      <Yard L={L} W={W} H={H} g={g} />
 
       {/* Cargo box: floor, solid front and far walls, see-through near wall and roof */}
       <Part p={[L / 2, -0.06, W / 2]} s={[L + 2 * WALL, 0.12, W + 2 * WALL]} color="#8b6b4a" rough={0.9} metal={0} />
@@ -170,15 +251,9 @@ function TruckModel({ L, W, H }: { L: number; W: number; H: number }) {
       {rails.map((x, i) => (
         <Part key={i} p={x.p} s={x.s} color={trim} metal={0.6} rough={0.35} />
       ))}
-      {/* Rear doors swung open against the sides */}
-      {[-1, 1].map((side) => (
-        <Part
-          key={side}
-          p={[L + WALL + 0.03, H / 2, side < 0 ? -WALL - W / 4 : W + WALL + W / 4]}
-          s={[0.04, H, W / 2]}
-          color={body}
-        />
-      ))}
+      {/* Rear doors folded back flat against the sides (the near one see-through like its wall) */}
+      <Part p={[L - W / 4, H / 2, -WALL - 0.05]} s={[W / 2, H, 0.04]} color={body} />
+      <Part p={[L - W / 4, H / 2, W + WALL + 0.05]} s={[W / 2, H, 0.04]} color="#e2e8f0" opacity={0.1} />
       {/* Rear lights and underride bar */}
       {wheelZ.map((z) => (
         <Part key={z} p={[L + WALL + 0.02, -0.3, z]} s={[0.04, 0.12, 0.3]} color="#ef4444" metal={0.1} />

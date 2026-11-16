@@ -292,7 +292,7 @@ export default function Simulator() {
       const alt = warehouses.find((w) => w.id !== target.id && summaries.get(w.id)!.free >= n);
       return setMessage({
         kind: "err",
-        text: `Not enough space in ${target.name}: ${n} requested, only ${t.free} slots free.${
+        text: `Not enough space in ${target.name}: ${n} requested, only ${t.free} pallet spaces free.${
           alt ? ` ${alt.name} has room.` : ""
         }`,
         switchTo: alt?.id,
@@ -553,7 +553,7 @@ export default function Simulator() {
               const s = summaries.get(w.id)!;
               return (
                 <option key={w.id} value={w.id}>
-                  {w.name} — {s.free.toLocaleString()} free
+                  {w.name} — {s.free.toLocaleString()} pallet spaces free
                 </option>
               );
             })}
@@ -633,7 +633,7 @@ export default function Simulator() {
               <Stat label="Rack levels" value={layout.levels} />
               <Stat label="Floor spots" value={layout.positions} />
               <Stat label="Capacity" value={layout.capacity} />
-              <Stat label="Free" value={free} />
+              <Stat label="Free spaces" value={free} />
               <div className="col-span-3 text-left">{capacityBar}</div>
             </section>
 
@@ -973,7 +973,7 @@ export default function Simulator() {
                     <select value={targetId} onChange={(e) => setTargetId(e.target.value)} className={inputCls}>
                       {warehouses.map((w) => (
                         <option key={w.id} value={w.id}>
-                          {w.name} ({summaries.get(w.id)!.free.toLocaleString()} free)
+                          {w.name} ({summaries.get(w.id)!.free.toLocaleString()} pallet spaces free)
                         </option>
                       ))}
                     </select>
