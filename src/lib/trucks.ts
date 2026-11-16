@@ -50,6 +50,12 @@ export function defaultTrucks(): Truck[] {
   }));
 }
 
+export interface Dims {
+  length: number; // cm
+  width: number;
+  height: number;
+}
+
 export interface Placement {
   x: number; // min corner, m
   y: number;
@@ -173,7 +179,17 @@ export function packTruck(truck: Truck, products: Map<string, Product>) {
       });
     }
   }
-  return { plan, placements };
+  // Bounding box of the load, and the clear space behind it (full width and height), in cm.
+  let ux = 0, uy = 0, uz = 0;
+  for (const q of placements) {
+    ux = Math.max(ux, q.x + q.dx);
+    uy = Math.max(uy, q.y + q.dy);
+    uz = Math.max(uz, q.z + q.dz);
+  }
+  const cm = (m: number) => Math.round(m * 100);
+  const used: Dims = { length: cm(ux), width: cm(uz), height: cm(uy) };
+  const free: Dims = { length: Math.max(0, truck.length - used.length), width: truck.width, height: truck.height };
+  return { plan, placements, used, free };
 }
 
 /** Largest k ≤ max such that k × perUnit more cartons of a product still fit the truck. */

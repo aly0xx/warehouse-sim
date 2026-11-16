@@ -97,6 +97,11 @@ function hydrate(w: SavedWarehouse, products: Product[]): Warehouse {
   return { ...w, config, customers: r.customers, stacks: r.stacks, system: "asrs", transition: "snap" };
 }
 
+/** "1360 × 248 × 270" (cm) */
+function fmtDims(d: { length: number; width: number; height: number }) {
+  return `${d.length} × ${d.width} × ${d.height}`;
+}
+
 /** "40 × 30 × 30 cm" */
 function dims(p: Product) {
   return `${p.length} × ${p.width} × ${p.height} cm`;
@@ -775,7 +780,7 @@ export default function Simulator() {
               {trucks.length === 0 && <p className="text-xs text-slate-500">No trucks yet.</p>}
               <ul className="flex flex-col gap-1">
                 {trucks.map((t) => {
-                  const { plan } = packed.get(t.id)!;
+                  const { plan, used, free } = packed.get(t.id)!;
                   const lenPct = (plan.usedLength / (t.length / 100)) * 100;
                   const boxes = t.loads.reduce((n, l) => n + l.boxes, 0);
                   return (
@@ -800,7 +805,10 @@ export default function Simulator() {
                         </button>
                       </div>
                       <div className="text-[11px] text-slate-500">
-                        {t.length} × {t.width} × {t.height} cm · {boxes.toLocaleString()} boxes
+                        {fmtDims(t)} cm · {boxes.toLocaleString()} boxes
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        Used {fmtDims(used)} · Free {fmtDims(free)}
                       </div>
                       <div className="mt-1 h-1.5 overflow-hidden rounded bg-slate-800">
                         <div
@@ -815,7 +823,7 @@ export default function Simulator() {
             </section>
 
             {activeTruck && (() => {
-              const { plan } = packed.get(activeTruck.id)!;
+              const { plan, used, free } = packed.get(activeTruck.id)!;
               const L = activeTruck.length / 100;
               return (
                 <section className="flex flex-col gap-2">
@@ -825,6 +833,32 @@ export default function Simulator() {
                     <Stat label="Floor free" value={`${Math.max(0, L - plan.usedLength).toFixed(2)} m`} />
                     <Stat label="Volume" value={`${((plan.cartonVolume / plan.truckVolume) * 100).toFixed(0)}%`} />
                   </div>
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="text-slate-500">
+                        <th className="text-left font-normal" />
+                        <th className="text-right font-normal">Length</th>
+                        <th className="text-right font-normal">Width</th>
+                        <th className="text-right font-normal">Height</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-slate-300">
+                      {(
+                        [
+                          ["Truck", activeTruck],
+                          ["Used", used],
+                          ["Remaining", free],
+                        ] as const
+                      ).map(([label, d]) => (
+                        <tr key={label}>
+                          <td className="text-slate-500">{label}</td>
+                          <td className="text-right">{d.length} cm</td>
+                          <td className="text-right">{d.width} cm</td>
+                          <td className="text-right">{d.height} cm</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                   {!plan.fits && (
                     <p className="text-[11px] text-rose-400">
                       Over capacity — a product was resized after loading. Remove a load to fix it.
