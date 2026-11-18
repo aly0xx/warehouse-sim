@@ -8,6 +8,7 @@ import {
   Customer,
   DEFAULT_CONFIG,
   DEFAULT_PRODUCT,
+  JUHAYNA_MILK,
   MIN_CRANE_AISLE,
   Product,
   Stacks,
@@ -139,6 +140,7 @@ export default function Simulator() {
     // Older saves only know the standard carton; make sure it exists for them.
     if (saved?.warehouses.some((w) => w.customers.some((c) => !c.productId)) && !products.some((p) => p.id === DEFAULT_PRODUCT.id))
       products = [DEFAULT_PRODUCT, ...products];
+    if (!products.some((p) => p.id === JUHAYNA_MILK.id)) products = [JUHAYNA_MILK, ...products];
     const list = saved?.warehouses.length ? saved.warehouses : [newWarehouse("Warehouse 1")];
     const warehouses = list.map((w) => hydrate(w, products));
     const activeId = warehouses.some((w) => w.id === saved?.activeId) ? saved!.activeId : warehouses[0].id;
@@ -170,6 +172,8 @@ export default function Simulator() {
   const [targetId, setTargetId] = useState(active.id);
   const [message, setMessage] = useState<Message>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Pallets the open 3D scan can physically hold; it replaces the simulated racks while shown.
+  const [scanRoom, setScanRoom] = useState<number | null>(null);
 
   // Layout + occupancy for every warehouse (for the switcher and target picker).
   const summaries = useMemo(
@@ -178,12 +182,13 @@ export default function Simulator() {
         warehouses.map((w) => {
           const layout = computeLayout(w.config);
           const used = countPallets(w.stacks);
-          return [w.id, { layout, used, free: layout.capacity - used }];
+          const capacity = w.id === activeId && scanRoom !== null ? scanRoom : layout.capacity;
+          return [w.id, { layout, used, capacity, free: Math.max(0, capacity - used) }];
         }),
       ),
-    [warehouses],
+    [warehouses, activeId, scanRoom],
   );
-  const { layout, used, free } = summaries.get(active.id)!;
+  const { layout, used, capacity, free } = summaries.get(active.id)!;
 
   useEffect(() => {
     try {
@@ -439,7 +444,8 @@ export default function Simulator() {
       const n = Math.ceil(l.boxes / pattern.perPallet);
       const existing = w.customers.find((c) => c.name === l.customer && c.productId === l.productId && c.placed);
       const id = existing?.id ?? crypto.randomUUID();
-      const stacks = allocate(computeLayout(w.config), w.stacks, id, n);
+      const scanFull = w.id === active.id && scanRoom !== null && countPallets(w.stacks) + n > scanRoom;
+      const stacks = scanFull ? null : allocate(computeLayout(w.config), w.stacks, id, n);
       if (!stacks) {
         failed.push(`${l.customer} (no room for ${n} pallets in ${w.name})`);
         continue;
@@ -572,7 +578,7 @@ export default function Simulator() {
   }, [ship, customers, trucks, productById, config]);
 
   const hovered = hover ? customers.find((c) => c.id === hover.customerId) : null;
-  const pct = layout.capacity ? (used / layout.capacity) * 100 : 0;
+  const pct = capacity ? Math.min(100, (used / capacity) * 100) : 0;
 
   const capacityBar = (
     <div>
@@ -580,7 +586,8 @@ export default function Simulator() {
         <div className="h-full bg-sky-500 transition-all" style={{ width: `${pct}%` }} />
       </div>
       <p className="mt-1 text-[11px] text-slate-400">
-        {used} / {layout.capacity} pallets stored ({pct.toFixed(1)}%) · {footprint} floor spots in use
+        {used} / {capacity} pallets stored ({pct.toFixed(1)}%)
+        {scanRoom === null ? ` · ${footprint} floor spots in use` : " on the open floor"}
       </p>
     </div>
   );
@@ -605,8 +612,14 @@ export default function Simulator() {
       <aside className="flex max-h-[55vh] w-full shrink-0 flex-col gap-4 overflow-y-auto border-slate-800 bg-[#141b24] p-4 md:max-h-none md:w-[340px] md:border-r">
         <header>
           <h1 className="text-lg font-semibold text-white">Warehouse Simulator</h1>
-          <p className="text-[11px] font-medium uppercase tracking-wider text-amber-400">Automated AS/RS · stacker cranes</p>
-          <p className="text-xs text-slate-400">Drag to orbit · right-drag to pan · scroll to zoom · click a pallet to select its customer</p>
+          <p className="text-[11px] font-medium uppercase tracking-wider text-amber-400">
+            {scanRoom === null ? "Automated AS/RS · stacker cranes" : "3D scan · floor storage"}
+          </p>
+          <p className="text-xs text-slate-400">
+            {scanRoom === null
+              ? "Drag to orbit · right-drag to pan · scroll to zoom · click a pallet to select its customer"
+              : "WASD to walk · arrow keys or drag to look · click a pallet to select its customer"}
+          </p>
         </header>
 
         {/* Warehouse switcher */}
@@ -1263,6 +1276,7 @@ export default function Simulator() {
           selectedId={selectedId}
           onSelect={setSelectedId}
           onHover={setHover}
+          onScanRoom={setScanRoom}
         />
         </div>
         {tab !== "trucks" && hovered && hover && (
@@ -1311,7 +1325,9 @@ export default function Simulator() {
           </div>
         )}
         <div className="pointer-events-none absolute bottom-3 right-3 rounded-full border border-sky-500/30 bg-[#0d1433]/80 px-3 py-1 text-[11px] text-sky-300">
-          {active.name} · {config.width} m × {config.length} m × {config.ceilingHeight} m
+          {scanRoom === null
+            ? `${active.name} · ${config.width} m × ${config.length} m × ${config.ceilingHeight} m`
+            : `${active.name} · 3D scan · room for ${scanRoom.toLocaleString()} pallets`}
         </div>
       </main>
     </div>

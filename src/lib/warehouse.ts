@@ -223,6 +223,14 @@ export interface Product {
   length: number; // carton dimensions, cm
   width: number;
   height: number;
+  print?: CartonPrint; // what's printed on the carton in the 3D scan view
+}
+
+export interface CartonPrint {
+  title: string;
+  titleAr?: string;
+  pack: string;
+  ink: string;
 }
 
 export const DEFAULT_PRODUCT: Product = {
@@ -231,6 +239,16 @@ export const DEFAULT_PRODUCT: Product = {
   length: 40,
   width: 30,
   height: 30,
+};
+
+/** Sold in Egypt as 6 × 1 L. The case size is an estimate, not a manufacturer figure. */
+export const JUHAYNA_MILK: Product = {
+  id: "juhayna-full-cream-milk-6x1l",
+  name: "Juhayna Full Cream Milk 6 × 1 L",
+  length: 30,
+  width: 20,
+  height: 20,
+  print: { title: "JUHAYNA FULL CREAM MILK", titleAr: "جهينة لبن كامل الدسم", pack: "6 × 1 L", ink: "#17406d" },
 };
 
 export const PALLET_DECK_H = 0.15; // wooden pallet deck height, m

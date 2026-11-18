@@ -36,6 +36,14 @@ yarn-error.log*
 # vercel
 .vercel
 
+# 3D scans of the real building: large and private
+*.spz
+*.ply
+*.splat
+*.ksplat
+# ...except the scan the site opens by default
+!public/linden-warehouse.spz
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

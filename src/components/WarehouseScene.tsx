@@ -4,6 +4,9 @@ import { Canvas, ThreeElements, ThreeEvent, useFrame, useThree } from "@react-th
 import { OrbitControls, Sky } from "@react-three/drei";
 import World from "./World";
 import Asrs, { FlowStats, FlowView } from "./Asrs";
+import { ScanLayer, ScanPanel, useScan } from "./ScanOverlay";
+import ScanCartons, { CartonPallet, GroundOutlines, useEuroPallet } from "./ScanCartons";
+import { ScanFit, ScanSlot, scanToSite } from "@/lib/scan";
 import { ComponentRef, RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import {
@@ -45,6 +48,7 @@ interface Props {
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onHover: (h: HoverInfo | null) => void;
+  onScanRoom?: (pallets: number | null) => void; // pallets the open scan can hold; null without a scan
 }
 
 export default function WarehouseScene(props: Props) {
@@ -62,32 +66,49 @@ export default function WarehouseScene(props: Props) {
   const [stats, setStats] = useState<FlowStats>({ inbound: 0, outbound: 0 });
   const [speed, setSpeed] = useState(1);
   const [finish, setFinish] = useState(0);
-  const display = flowView?.warehouseId === props.warehouseId ? flowView : EMPTY_VIEW;
+  const scanPallet = useMemo(
+    () => ({ width: config.palletWidth, depth: config.palletDepth, height: config.palletHeight }),
+    [config.palletWidth, config.palletDepth, config.palletHeight],
+  );
+  const scan = useScan(props.warehouseId, scanPallet);
+  // Over a scan, pallets sit on the open floor found in it, not in the simulated racks.
+  const scanSlots = scan.showing ? (scan.fit?.slots ?? []) : null;
+  const { onScanRoom } = props;
+  const scanRoom = scan.showing && scan.fit ? scan.fit.slots.length : null;
+  useEffect(() => onScanRoom?.(scanRoom), [onScanRoom, scanRoom]);
+  // A scan has no cranes to watch, so pallets sit in their final slots right away.
+  const display = !scan.showing && flowView?.warehouseId === props.warehouseId ? flowView : EMPTY_VIEW;
   const onView = useCallback((v: FlowView) => setFlowView(v), []);
   const onStats = useCallback((s: FlowStats) => setStats(s), []);
   const moving = stats.inbound + stats.outbound;
   const span = Math.max(config.width, config.length);
-  const tags = useTags(props);
+  const tags = useTags(props, scanSlots, scan.fit);
+  const stored = useMemo(() => props.stacks.reduce((n, stack) => n + stack.filter((id) => id !== null).length, 0), [props.stacks]);
   const tagEls = useRef(new Map<string, HTMLElement>());
   return (
     <div className="absolute inset-0">
     <Canvas
       shadows="percentage"
-      dpr={[1, 2]}
+      dpr={scan.showing ? 1 : [1, 2]}
       gl={{ antialias: true }}
       camera={{ fov: 45, near: 0.1, far: 6000 }}
       onPointerMissed={() => props.onSelect(null)}
     >
       {/* Daytime sky; fog tinted to the horizon so the ground fades into it */}
-      <color attach="background" args={["#c9dceb"]} />
-      <Sky distance={4500} sunPosition={SUN} turbidity={5} rayleigh={1.2} mieCoefficient={0.004} mieDirectionalG={0.8} />
-      <fog attach="fog" args={["#c9dceb", span * 2.5 + 80, span * 8 + 600]} />
-      <hemisphereLight args={["#dbeafe", "#4a6b33", 1.1]} />
+      <color attach="background" args={[scan.showing ? "#0b1020" : "#c9dceb"]} />
+      {!scan.showing && (
+        <>
+          <Sky distance={4500} sunPosition={SUN} turbidity={5} rayleigh={1.2} mieCoefficient={0.004} mieDirectionalG={0.8} />
+          <fog attach="fog" args={["#c9dceb", span * 2.5 + 80, span * 8 + 600]} />
+        </>
+      )}
+      {/* Under a scan: soft, even light like the building's own, with no outdoor sun */}
+      <hemisphereLight args={scan.showing ? ["#fff8ec", "#b9ad9a", 2.5] : ["#dbeafe", "#4a6b33", 1.1]} />
       <directionalLight
         position={[SUN[0] * (span + 40), SUN[1] * (span + 40), SUN[2] * (span + 40)]}
-        intensity={2.4}
+        intensity={scan.showing ? 0.9 : 2.4}
         color="#fff4e0"
-        castShadow
+        castShadow={!scan.showing}
         shadow-mapSize={[4096, 4096]}
         shadow-bias={-0.0004}
         shadow-camera-left={-(span * 0.75 + 30)}
@@ -104,25 +125,29 @@ export default function WarehouseScene(props: Props) {
           position={[0, 0, layout.frame.rotated ? layout.frame.width : 0]}
           rotation={[0, layout.frame.rotated ? Math.PI / 2 : 0, 0]}
         >
-          <Building config={fc} layout={layout} />
-          <Racking config={fc} layout={layout} />
-          <Asrs
-            config={fc}
-            layout={layout}
-            stacks={props.stacks}
-            customers={props.customers}
-            products={props.products}
-            warehouseId={props.warehouseId}
-            transition={props.transition}
-            speed={speed}
-            finishSignal={finish}
-            onView={onView}
-            onStats={onStats}
-          />
-          <RowSigns config={fc} layout={layout} />
-          <Docks config={fc} layout={layout} />
-          <World config={fc} layout={layout} />
-          <Pallets {...frameProps} display={display} />
+          {/* Hidden, not unmounted, under a scan so the AS/RS flow simulation keeps running */}
+          <group visible={!scan.showing}>
+            <Building config={fc} layout={layout} />
+            <Racking config={fc} layout={layout} />
+            <Asrs
+              config={fc}
+              layout={layout}
+              stacks={props.stacks}
+              customers={props.customers}
+              products={props.products}
+              warehouseId={props.warehouseId}
+              transition={props.transition}
+              speed={speed}
+              finishSignal={finish}
+              onView={onView}
+              onStats={onStats}
+            />
+            <RowSigns config={fc} layout={layout} />
+            <Docks config={fc} layout={layout} />
+            <World config={fc} layout={layout} />
+          </group>
+          <ScanLayer scan={scan} stored={stored} pallet={scanPallet} />
+          <Pallets {...frameProps} display={display} scanSlots={scanSlots} scanFit={scan.showing ? scan.fit : null} />
         </group>
       </group>
       <TagProjector tags={tags} els={tagEls} />
@@ -148,7 +173,8 @@ export default function WarehouseScene(props: Props) {
         </button>
       ))}
     </div>
-    {moving > 0 && (
+    <ScanPanel scan={scan} stored={stored} />
+    {moving > 0 && !scan.showing && (
       <div className="absolute bottom-3 left-3 flex items-center gap-3 rounded-lg border border-amber-500/40 bg-[#0d1433]/90 px-3 py-2 text-xs text-slate-200 shadow-lg">
         <span className="flex items-center gap-2">
           <span className="h-2 w-2 animate-pulse rounded-full bg-amber-400" />
@@ -578,11 +604,13 @@ interface Instance extends SlotContent {
   x: number;
   y: number;
   z: number;
+  spot?: number; // 1-based open-floor spot when placed on a scan
 }
 
 /** Above this many cartons in total, extra pallets are drawn as one solid load block. */
 const BOX_BUDGET = 90_000;
 const BOX_GAP = 0.012; // visible seam between cartons, m
+const CARDBOARD = new THREE.Color("#b58a5c"); // cartons look like cartons over a real scan
 
 function Pallets({
   config,
@@ -594,13 +622,28 @@ function Pallets({
   onSelect,
   onHover,
   display,
-}: Props & { display: FlowView }) {
+  scanSlots,
+  scanFit,
+}: Props & { display: FlowView; scanSlots: ScanSlot[] | null; scanFit: ScanFit | null }) {
   // What is physically in the racks: allocated pallets that have landed, plus
   // removed pallets still waiting for their crane.
   const instances = useMemo(() => {
     const nC = layout.cols.length;
     const out: Instance[] = [];
+    let spot = 0;
+    const tops = new Map<string, number>(); // height reached so far on each floor spot
     const add = (c: SlotContent) => {
+      if (scanSlots) {
+        const s = scanSlots[spot++];
+        if (!s) return;
+        // Floor stacks rest directly on the load below, unlike pallets on rack beams.
+        const at = `${s.x}:${s.z}`;
+        const y = tops.get(at) ?? 0;
+        const load = c.pattern && c.boxes > 0 ? Math.ceil(c.boxes / c.pattern.perLayer) * c.pattern.bh : config.palletHeight - PALLET_DECK_H;
+        tops.set(at, y + PALLET_DECK_H + load);
+        out.push({ ...c, x: s.x, y, z: s.z, spot });
+        return;
+      }
       const r = layout.rows[Math.floor(c.p / nC)];
       const z = layout.cols[c.p % nC];
       if (r && z !== undefined) out.push({ ...c, x: r.x, y: levelY(config, c.level), z });
@@ -608,18 +651,30 @@ function Pallets({
     for (const c of palletContents(stacks, customers, products, config)) if (!display.hidden.has(c.key)) add(c);
     for (const c of display.ghosts) add(c);
     return out;
-  }, [stacks, layout, config, customers, products, display]);
+  }, [stacks, layout, config, customers, products, display, scanSlots]);
 
   // Split pallets into "draw every carton" and "draw a solid block" within the budget.
   const { boxCount, solid } = useMemo(() => {
     let boxCount = 0;
     const solid: number[] = [];
     instances.forEach((it, i) => {
+      if (scanSlots && it.pattern && it.boxes > 0) return; // drawn by ScanCartons
       if (it.pattern && it.boxes > 0 && boxCount + it.boxes <= BOX_BUDGET) boxCount += it.boxes;
       else solid.push(i);
     });
     return { boxCount, solid };
-  }, [instances]);
+  }, [instances, scanSlots]);
+
+  const cartonPallets = useMemo<CartonPallet[]>(() => {
+    if (!scanSlots) return [];
+    const productOf = new Map(customers.map((c) => [c.id, c.productId]));
+    return instances.flatMap((it) => {
+      const productId = productOf.get(it.customerId);
+      if (!it.pattern || it.boxes === 0 || !productId) return [];
+      return [{ x: it.x, y: it.y, z: it.z, boxes: it.boxes, customerId: it.customerId, productId, pattern: it.pattern }];
+    });
+  }, [scanSlots, instances, customers]);
+  const euroPallet = useEuroPallet(config.palletDepth, config.palletWidth);
 
   const baseRef = useRef<THREE.InstancedMesh>(null);
   const pickRef = useRef<THREE.InstancedMesh>(null);
@@ -634,8 +689,9 @@ function Pallets({
     const col = new THREE.Color();
     const dim = new THREE.Color("#28345a");
     const solidSet = new Set(solid);
-    const tint = (it: Instance, jitter = 0) => {
+    const tint = (it: Instance, jitter = 0, share = 1) => {
       col.set(it.color);
+      if (share < 1) col.lerp(CARDBOARD, 1 - share);
       if (jitter) col.offsetHSL(0, 0, jitter);
       if (selectedId && it.customerId !== selectedId) col.lerp(dim, 0.8);
       return col;
@@ -671,7 +727,7 @@ function Pallets({
       if (solidSet.has(i)) {
         if (solidMesh) {
           solidMesh.setMatrixAt(s, o.matrix);
-          solidMesh.setColorAt(s, tint(it));
+          solidMesh.setColorAt(s, tint(it, 0, scanSlots ? 0 : 1));
         }
         s++;
         return;
@@ -698,7 +754,9 @@ function Pallets({
       if (m.instanceColor) m.instanceColor.needsUpdate = true;
       m.computeBoundingSphere();
     }
-  }, [instances, solid, selectedId, fullH, config.palletDepth, config.palletWidth]);
+  }, [instances, solid, selectedId, fullH, config.palletDepth, config.palletWidth, scanSlots]);
+
+  const grounded = useMemo(() => (scanSlots ? instances.filter((it) => it.y === 0) : []), [scanSlots, instances]);
 
   if (instances.length === 0) return null;
 
@@ -706,11 +764,20 @@ function Pallets({
     e.instanceId !== undefined ? instances[e.instanceId] : undefined;
 
   return (
-    <group key={`${instances.length}:${boxCount}:${solid.length}`}>
-      <instancedMesh ref={baseRef} args={[undefined, undefined, instances.length]} castShadow receiveShadow raycast={() => null}>
-        <boxGeometry args={[config.palletDepth, PALLET_DECK_H, config.palletWidth]} />
-        <meshStandardMaterial color="#c08a52" roughness={0.85} />
-      </instancedMesh>
+    // Over a scan the pallets are laid out square to its walls; this turns them to match.
+    <group position={[scanFit?.centre.x ?? 0, 0, scanFit?.centre.z ?? 0]} rotation={[0, scanFit?.yaw ?? 0, 0]}>
+    <group key={`${instances.length}:${boxCount}:${solid.length}`} position={[-(scanFit?.centre.x ?? 0), 0, -(scanFit?.centre.z ?? 0)]}>
+      <GroundShadows spots={grounded} width={config.palletDepth} depth={config.palletWidth} />
+      <GroundOutlines spots={grounded} depth={config.palletDepth} width={config.palletWidth} selectedId={selectedId} />
+      {scanSlots ? (
+        <instancedMesh ref={baseRef} args={[euroPallet.geometry, euroPallet.material, instances.length]} raycast={() => null} />
+      ) : (
+        <instancedMesh ref={baseRef} args={[undefined, undefined, instances.length]} castShadow receiveShadow raycast={() => null}>
+          <boxGeometry args={[config.palletDepth, PALLET_DECK_H, config.palletWidth]} />
+          <meshStandardMaterial color="#c08a52" roughness={0.85} />
+        </instancedMesh>
+      )}
+      {scanSlots && <ScanCartons pallets={cartonPallets} products={products} selectedId={selectedId} />}
       {boxCount > 0 && (
         <instancedMesh ref={boxRef} args={[undefined, undefined, boxCount]} castShadow receiveShadow raycast={() => null}>
           <boxGeometry args={[1, 1, 1]} />
@@ -735,7 +802,7 @@ function Pallets({
         onPointerMove={(e) => {
           e.stopPropagation();
           const it = pick(e);
-          if (it) onHover({ customerId: it.customerId, slot: slotLabel(layout, it.p, it.level), boxes: it.boxes });
+          if (it) onHover({ customerId: it.customerId, slot: it.spot ? `scan spot ${it.spot}` : slotLabel(layout, it.p, it.level), boxes: it.boxes });
           document.body.style.cursor = "pointer";
         }}
         onPointerOut={() => {
@@ -747,6 +814,46 @@ function Pallets({
         <meshBasicMaterial colorWrite={false} depthWrite={false} />
       </instancedMesh>
     </group>
+    </group>
+  );
+}
+
+const SHADOW_SPREAD = 1.45; // shadow size relative to the pallet footprint
+
+/** Soft dark patches under floor pallets: a scan can't receive real shadows. */
+function GroundShadows({ spots, width, depth }: { spots: Instance[]; width: number; depth: number }) {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const texture = useMemo(() => {
+    const size = 128;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext("2d")!;
+    ctx.filter = `blur(${size * 0.09}px)`;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(size * 0.2, size * 0.2, size * 0.6, size * 0.6);
+    return new THREE.CanvasTexture(canvas);
+  }, []);
+  useEffect(() => () => texture.dispose(), [texture]);
+  useLayoutEffect(() => {
+    const mesh = ref.current;
+    if (!mesh) return;
+    const o = new THREE.Object3D();
+    o.rotation.x = -Math.PI / 2;
+    spots.forEach((it, i) => {
+      o.position.set(it.x, 0.01, it.z);
+      o.updateMatrix();
+      mesh.setMatrixAt(i, o.matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+  }, [spots]);
+  if (!spots.length) return null;
+  return (
+    // Drawn after the splats, which write no depth, so it lands on top of the scanned floor.
+    <instancedMesh key={spots.length} ref={ref} args={[undefined, undefined, spots.length]} renderOrder={20} raycast={noRaycast}>
+      <planeGeometry args={[width * SHADOW_SPREAD, depth * SHADOW_SPREAD]} />
+      <meshBasicMaterial map={texture} transparent opacity={0.55} depthWrite={false} toneMapped={false} />
+    </instancedMesh>
   );
 }
 
@@ -756,21 +863,23 @@ interface Tag {
 }
 
 /** Name-tag anchor above each customer's cluster. */
-function useTags({ config, layout, stacks, customers }: Props): Tag[] {
+function useTags({ config, layout, stacks, customers }: Props, scanSlots: ScanSlot[] | null, scanFit: ScanFit | null): Tag[] {
   return useMemo(() => {
     const nC = layout.cols.length;
     const acc = new Map<string, { x: number; z: number; n: number; top: number }>();
+    let spot = 0;
     stacks.forEach((stack, p) => {
       const r = layout.rows[Math.floor(p / nC)];
-      const z = layout.cols[p % nC];
-      if (!r || z === undefined) return;
+      const col = layout.cols[p % nC];
       stack.forEach((id, level) => {
         if (id === null) return;
+        const slot = scanSlots?.[spot++];
+        if (scanSlots ? !slot : !r || col === undefined) return;
         const a = acc.get(id) ?? { x: 0, z: 0, n: 0, top: 0 };
-        a.x += r.x;
-        a.z += z;
+        a.x += slot ? slot.x : r.x;
+        a.z += slot ? slot.z : col;
         a.n++;
-        a.top = Math.max(a.top, level + 1);
+        a.top = Math.max(a.top, slot ? slot.y : levelY(config, level));
         acc.set(id, a);
       });
     });
@@ -778,17 +887,14 @@ function useTags({ config, layout, stacks, customers }: Props): Tag[] {
       .filter((c) => acc.has(c.id))
       .map((c) => {
         const a = acc.get(c.id)!;
-        const [wx, wz] = frameToWorld(layout, a.x / a.n, a.z / a.n);
+        const mid = scanSlots && scanFit ? scanToSite(scanFit, a.x / a.n, a.z / a.n) : { x: a.x / a.n, z: a.z / a.n };
+        const [wx, wz] = frameToWorld(layout, mid.x, mid.z);
         return {
           c,
-          pos: new THREE.Vector3(
-            wx - config.width / 2,
-            levelY(config, a.top - 1) + config.palletHeight + 0.6,
-            wz - config.length / 2,
-          ),
+          pos: new THREE.Vector3(wx - config.width / 2, a.top + config.palletHeight + 0.6, wz - config.length / 2),
         };
       });
-  }, [stacks, layout, customers, config]);
+  }, [stacks, layout, customers, config, scanSlots, scanFit]);
 }
 
 /** Moves the DOM name tags to their projected screen positions every frame. */
